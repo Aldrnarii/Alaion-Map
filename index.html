@@ -1,1 +1,1882 @@
-<!doctype html> <html lang="en"> <head> <meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1"> <title>Alaion Interactive Map</title> <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"> <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script> <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script> <style> :root { --bg: #111827; --panel: #1f2937; --panel-2: #111827; --text: #f3f4f6; --muted: #9ca3af; --border: #374151; --accent: #d4af37; --danger: #dc2626; --success: #16a34a; } * { box-sizing: border-box; } html, body { margin: 0; height: 100%; font-family: Arial, Helvetica, sans-serif; background: var(--bg); color: var(--text); } #app { display: grid; grid-template-columns: 340px 1fr; height: 100vh; } .sidebar { background: var(--panel); border-right: 1px solid var(--border); padding: 16px; overflow-y: auto; } .sidebar h1 { margin: 0 0 6px 0; font-size: 1.5rem; } .muted { color: var(--muted); font-size: 0.92rem; } .section { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); } .block-label { display: block; font-weight: 700; margin-bottom: 8px; } input, textarea, select, button { width: 100%; font: inherit; border-radius: 8px; border: 1px solid var(--border); padding: 10px 12px; margin-bottom: 10px; } input, textarea, select { background: #0f172a; color: var(--text); } textarea { min-height: 90px; resize: vertical; } button { background: #273449; color: var(--text); cursor: pointer; } button:hover { filter: brightness(1.1); } button.primary { background: var(--accent); color: #111; font-weight: 700; } button.danger { background: var(--danger); color: white; } button.success { background: var(--success); color: white; } .hidden { display: none !important; } .coords { font-size: 0.9rem; color: var(--muted); margin-bottom: 10px; } #filterList label { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 0.95rem; cursor: pointer; } #filterList input[type="checkbox"] { width: auto; margin: 0; } #locationList { display: grid; gap: 8px; } .location-item { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; cursor: pointer; } .location-item:hover { border-color: var(--accent); } .location-name { font-weight: 700; margin-bottom: 4px; } .location-meta { color: var(--muted); font-size: 0.9rem; } #map { width: 100%; height: 100%; background: #0b1020; } .pin { width: 18px; height: 18px; border-radius: 50%; border: 2px solid white; background: var(--pin-color, #999); box-shadow: 0 0 0 2px rgba(0,0,0,0.25); } .popup-title { font-size: 1rem; font-weight: 700; margin-bottom: 4px; } .popup-category { color: #555; font-size: 0.9rem; margin-bottom: 8px; } .popup-desc { margin-bottom: 10px; } .popup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; } .popup-btn { display: inline-block; background: #1f2937; color: white !important; text-decoration: none; border: none; border-radius: 6px; padding: 8px 10px; cursor: pointer; font-size: 0.9rem; } .popup-btn.delete { background: #b91c1c; } @media (max-width: 900px) { #app { grid-template-columns: 1fr; grid-template-rows: 420px 1fr; } .sidebar { border-right: 0; border-bottom: 1px solid var(--border); } } </style> </head> <body> <div id="app"> <aside class="sidebar"> <h1>Alaion</h1> <div class="muted">Interactive map</div> <div class="section"> <label class="block-label" for="searchInput">Search</label> <input id="searchInput" type="text" placeholder="Search locations..."> </div> <div class="section"> <label class="block-label">Visible categories</label> <div id="filterList"></div> </div> <div class="section"> <button id="signInBtn">Sign in as admin</button> <button id="signOutBtn" class="hidden">Sign out</button> <button id="toggleAdminBtn" class="hidden">Enter admin mode</button> <button id="addMarkerBtn" class="hidden">Add marker</button> <div id="authStatus" class="muted">Viewing as guest</div> </div> <div id="formSection" class="section hidden"> <h2 id="formTitle">Add marker</h2> <div id="coordPreview" class="coords">No coordinates selected yet.</div> <form id="markerForm"> <input type="hidden" id="markerId"> <input type="hidden" id="markerX"> <input type="hidden" id="markerY"> <label class="block-label" for="markerName">Name</label> <input id="markerName" type="text" required> <label class="block-label" for="markerCategory">Category</label> <select id="markerCategory"></select> <label class="block-label" for="markerDescription">Description</label> <textarea id="markerDescription" placeholder="Short description..."></textarea> <label class="block-label" for="markerUrl">Notion / wiki URL</label> <input id="markerUrl" type="url" placeholder="https://..."> <button type="submit" class="primary" id="saveMarkerBtn">Save marker</button> <button type="button" id="cancelFormBtn">Cancel</button> </form> </div> <div class="section"> <label class="block-label">Locations</label> <div id="locationList"></div> </div> </aside> <div id="map"></div> </div> <script> // ========================= // CONFIG — EDIT THESE // ========================= const SUPABASE_URL = 'https://hozwaajjnyaqojgrwwwe.supabase.co'; const SUPABASE_ANON_KEY = 'sb_publishable_KY1D8WaJ9n1H5oLbZj2cuw_dAM0eGKE'; // If you upload JPG, keep .jpg // If you upload PNG, change this to './alaion-map.png' const MAP_IMAGE_URL = './alaion-map.png'; // Replace with your real image dimensions in pixels const MAP_IMAGE_WIDTH = 9200; const MAP_IMAGE_HEIGHT = 5176; const CATEGORY_OPTIONS = [ 'Capital', 'City', 'Town', 'Fortress', 'Ruin', 'Landmark', 'Dungeon', 'Region', 'Port', 'Other' ]; const CATEGORY_COLORS = { Capital: '#d4af37', City: '#2b78e4', Town: '#6aa84f', Fortress: '#8e7cc3', Ruin: '#cc4125', Landmark: '#3d85c6', Dungeon: '#674ea7', Region: '#f1c232', Port: '#0b5394', Other: '#808080' }; // ========================= // BASIC CHECKS // ========================= if ( SUPABASE_URL.includes('PASTE_YOUR') || SUPABASE_ANON_KEY.includes('PASTE_YOUR') ) { alert('Edit index.html and paste your real Supabase URL and publishable key.'); } const db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY); let currentSession = null; let isAdmin = false; let adminMode = false; let pendingAdd = false; let markersData = []; let leafletMarkers = []; let visibleCategories = new Set(CATEGORY_OPTIONS); let searchText = ''; const mapBounds = [[0, 0], [MAP_IMAGE_HEIGHT, MAP_IMAGE_WIDTH]]; const map = L.map('map', { crs: L.CRS.Simple, minZoom: -2, maxZoom: 2, zoomSnap: 0.25 }); L.imageOverlay(MAP_IMAGE_URL, mapBounds).addTo(map); map.fitBounds(mapBounds); map.setMaxBounds(mapBounds); const searchInput = document.getElementById('searchInput'); const filterList = document.getElementById('filterList'); const locationList = document.getElementById('locationList'); const signInBtn = document.getElementById('signInBtn'); const signOutBtn = document.getElementById('signOutBtn'); const toggleAdminBtn = document.getElementById('toggleAdminBtn'); const addMarkerBtn = document.getElementById('addMarkerBtn'); const authStatus = document.getElementById('authStatus'); const formSection = document.getElementById('formSection'); const formTitle = document.getElementById('formTitle'); const coordPreview = document.getElementById('coordPreview'); const markerForm = document.getElementById('markerForm'); const markerId = document.getElementById('markerId'); const markerX = document.getElementById('markerX'); const markerY = document.getElementById('markerY'); const markerName = document.getElementById('markerName'); const markerCategory = document.getElementById('markerCategory'); const markerDescription = document.getElementById('markerDescription'); const markerUrl = document.getElementById('markerUrl'); const cancelFormBtn = document.getElementById('cancelFormBtn'); function escapeHtml(value = '') { return value .replaceAll('&', '&amp;') .replaceAll('<', '&lt;') .replaceAll('>', '&gt;') .replaceAll('"', '&quot;') .replaceAll("'", '&#039;'); } function populateCategorySelect() { markerCategory.innerHTML = ''; for (const category of CATEGORY_OPTIONS) { const option = document.createElement('option'); option.value = category; option.textContent = category; markerCategory.appendChild(option); } } function buildIcon(category) { const color = CATEGORY_COLORS[category] || CATEGORY_COLORS.Other; return L.divIcon({ className: '', html: `<div class="pin" style="--pin-color:${color}"></div>`, iconSize: [18, 18], iconAnchor: [9, 9], popupAnchor: [0, -10] }); } function markerPassesFilters(marker) { if (!visibleCategories.has(marker.category)) return false; if (!searchText) return true; const haystack = [ marker.name || '', marker.category || '', marker.description || '' ].join(' ').toLowerCase(); return haystack.includes(searchText.toLowerCase()); } function popupHtml(marker) { const safeName = escapeHtml(marker.name || ''); const safeCategory = escapeHtml(marker.category || ''); const safeDescription = escapeHtml(marker.description || ''); const safeUrl = marker.notion_url ? escapeHtml(marker.notion_url) : ''; return ` <div class="popup-title">${safeName}</div> <div class="popup-category">${safeCategory}</div> ${safeDescription ? `<div class="popup-desc">${safeDescription}</div>` : ''} <div class="popup-actions"> ${safeUrl ? `<a class="popup-btn" href="${safeUrl}" target="_blank" rel="noopener noreferrer">Open page</a>` : ''} ${isAdmin && adminMode ? `<button class="popup-btn" onclick="window.editMarkerFromPopup('${marker.id}')">Edit</button>` : ''} ${isAdmin && adminMode ? `<button class="popup-btn delete" onclick="window.deleteMarkerFromPopup('${marker.id}')">Delete</button>` : ''} </div> `; } function clearLeafletMarkers() { for (const marker of leafletMarkers) { map.removeLayer(marker); } leafletMarkers = []; } function renderFilterList() { const categories = new Set(CATEGORY_OPTIONS); for (const marker of markersData) categories.add(marker.category); filterList.innerHTML = ''; [...categories].forEach(category => { const wrapper = document.createElement('label'); wrapper.innerHTML = ` <input type="checkbox" ${visibleCategories.has(category) ? 'checked' : ''} data-category="${escapeHtml(category)}"> <span>${escapeHtml(category)}</span> `; filterList.appendChild(wrapper); }); filterList.querySelectorAll('input[type="checkbox"]').forEach(input => { input.addEventListener('change', () => { const category = input.getAttribute('data-category'); if (input.checked) visibleCategories.add(category); else visibleCategories.delete(category); renderAll(); }); }); } function renderLocationList() { locationList.innerHTML = ''; const filtered = markersData.filter(markerPassesFilters); if (filtered.length === 0) { locationList.innerHTML = '<div class="muted">No matching locations.</div>'; return; } for (const marker of filtered) { const item = document.createElement('div'); item.className = 'location-item'; item.innerHTML = ` <div class="location-name">${escapeHtml(marker.name)}</div> <div class="location-meta">${escapeHtml(marker.category || 'Other')}</div> `; item.addEventListener('click', () => { map.setView([marker.y, marker.x], Math.max(map.getZoom(), 0)); }); locationList.appendChild(item); } } function renderMarkersOnMap() { clearLeafletMarkers(); const filtered = markersData.filter(markerPassesFilters); for (const marker of filtered) { const leafletMarker = L.marker([marker.y, marker.x], { icon: buildIcon(marker.category), draggable: isAdmin && adminMode }).addTo(map); leafletMarker.bindPopup(popupHtml(marker)); if (isAdmin && adminMode) { leafletMarker.on('dragend', async (event) => { const latlng = event.target.getLatLng(); const { error } = await db .from('markers') .update({ x: latlng.lng, y: latlng.lat }) .eq('id', marker.id); if (error) { alert('Failed to update marker position: ' + error.message); } await loadMarkers(); }); } leafletMarkers.push(leafletMarker); } } function renderAll() { renderFilterList(); renderLocationList(); renderMarkersOnMap(); } async function loadMarkers() { const { data, error } = await db .from('markers') .select('*') .order('name', { ascending: true }); if (error) { console.error(error); alert('Failed to load markers: ' + error.message); return; } markersData = data || []; renderAll(); } async function refreshAuthState() { const result = await db.auth.getSession(); currentSession = result.data.session; isAdmin = false; adminMode = false; pendingAdd = false; if (currentSession?.user?.id) { const { data } = await db .from('admins') .select('user_id') .eq('user_id', currentSession.user.id) .maybeSingle(); isAdmin = !!data; } updateAuthUi(); renderAll(); } function updateAuthUi() { if (!currentSession) { authStatus.textContent = 'Viewing as guest'; signInBtn.classList.remove('hidden'); signOutBtn.classList.add('hidden'); toggleAdminBtn.classList.add('hidden'); addMarkerBtn.classList.add('hidden'); formSection.classList.add('hidden'); return; } const email = currentSession.user.email || 'Signed in'; authStatus.textContent = isAdmin ? `Signed in as admin: ${email}` : `Signed in, but not an admin: ${email}`; signInBtn.classList.add('hidden'); signOutBtn.classList.remove('hidden'); if (isAdmin) { toggleAdminBtn.classList.remove('hidden'); toggleAdminBtn.textContent = adminMode ? 'Exit admin mode' : 'Enter admin mode'; addMarkerBtn.classList.toggle('hidden', !adminMode); } else { toggleAdminBtn.classList.add('hidden'); addMarkerBtn.classList.add('hidden'); formSection.classList.add('hidden'); } } function openFormForNewMarker(x, y) { formSection.classList.remove('hidden'); formTitle.textContent = 'Add marker'; markerId.value = ''; markerX.value = x; markerY.value = y; markerName.value = ''; markerCategory.value = 'City'; markerDescription.value = ''; markerUrl.value = ''; coordPreview.textContent = `Selected coordinates — X: ${x.toFixed(2)}, Y: ${y.toFixed(2)}`; } function openFormForExistingMarker(marker) { formSection.classList.remove('hidden'); formTitle.textContent = 'Edit marker'; markerId.value = marker.id; markerX.value = marker.x; markerY.value = marker.y; markerName.value = marker.name || ''; markerCategory.value = marker.category || 'Other'; markerDescription.value = marker.description || ''; markerUrl.value = marker.notion_url || ''; coordPreview.textContent = `Coordinates — X: ${Number(marker.x).toFixed(2)}, Y: ${Number(marker.y).toFixed(2)}`; } function closeForm() { formSection.classList.add('hidden'); markerForm.reset(); markerId.value = ''; markerX.value = ''; markerY.value = ''; coordPreview.textContent = 'No coordinates selected yet.'; pendingAdd = false; } window.editMarkerFromPopup = function(id) { const marker = markersData.find(m => m.id === id); if (!marker) return; openFormForExistingMarker(marker); }; window.deleteMarkerFromPopup = async function(id) { const marker = markersData.find(m => m.id === id); if (!marker) return; const confirmed = confirm(`Delete marker "${marker.name}"?`); if (!confirmed) return; const { error } = await db .from('markers') .delete() .eq('id', id); if (error) { alert('Failed to delete marker: ' + error.message); return; } await loadMarkers(); }; map.on('click', (event) => { if (!(isAdmin && adminMode && pendingAdd)) return; pendingAdd = false; openFormForNewMarker(event.latlng.lng, event.latlng.lat); }); searchInput.addEventListener('input', () => { searchText = searchInput.value.trim(); renderAll(); }); signInBtn.addEventListener('click', async () => { const email = prompt('Enter your admin email address:'); if (!email) return; const redirectTo = window.location.origin + window.location.pathname; const { error } = await db.auth.signInWithOtp({ email, options: { emailRedirectTo: redirectTo } }); if (error) { alert('Sign-in failed: ' + error.message); return; } alert('Magic link sent. Open the email and click the sign-in link.'); }); signOutBtn.addEventListener('click', async () => { await db.auth.signOut(); await refreshAuthState(); }); toggleAdminBtn.addEventListener('click', () => { adminMode = !adminMode; pendingAdd = false; updateAuthUi(); renderAll(); }); addMarkerBtn.addEventListener('click', () => { pendingAdd = true; formSection.classList.add('hidden'); coordPreview.textContent = 'Click on the map to place the new marker.'; alert('Click on the map where you want the new marker.'); }); cancelFormBtn.addEventListener('click', () => { closeForm(); }); markerForm.addEventListener('submit', async (event) => { event.preventDefault(); const payload = { name: markerName.value.trim(), category: markerCategory.value, x: Number(markerX.value), y: Number(markerY.value), description: markerDescription.value.trim() || null, notion_url: markerUrl.value.trim() || null }; if (!payload.name) { alert('Name is required.'); return; } if (Number.isNaN(payload.x) || Number.isNaN(payload.y)) { alert('No coordinates selected. Click "Add marker" and then click the map.'); return; } let error = null; if (markerId.value) { const result = await db .from('markers') .update(payload) .eq('id', markerId.value); error = result.error; } else { const result = await db .from('markers') .insert([payload]); error = result.error; } if (error) { alert('Failed to save marker: ' + error.message); return; } closeForm(); await loadMarkers(); }); db.auth.onAuthStateChange(async () => { await refreshAuthState(); }); populateCategorySelect(); (async function init() { await refreshAuthState(); await loadMarkers(); })(); </script> </body> </html>
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1"
+  >
+
+  <title>Alaion Interactive Map</title>
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  >
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <script
+    src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"
+  ></script>
+
+  <style>
+    :root {
+      --bg: #111827;
+      --panel: #1f2937;
+      --panel-2: #111827;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --border: #374151;
+      --accent: #d4af37;
+      --danger: #dc2626;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    #app {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      width: 100%;
+      height: 100vh;
+    }
+
+    .sidebar {
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      padding: 16px;
+      overflow-y: auto;
+    }
+
+    .sidebar h1 {
+      margin: 0 0 6px 0;
+      font-size: 1.5rem;
+    }
+
+    .sidebar h2 {
+      margin: 0 0 12px 0;
+      font-size: 1.1rem;
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .section {
+      margin-top: 18px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+    }
+
+    .block-label {
+      display: block;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    input,
+    textarea,
+    select,
+    button {
+      width: 100%;
+      font: inherit;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      margin-bottom: 10px;
+    }
+
+    input,
+    textarea,
+    select {
+      background: #0f172a;
+      color: var(--text);
+    }
+
+    textarea {
+      min-height: 90px;
+      resize: vertical;
+    }
+
+    button {
+      background: #273449;
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    button:hover {
+      filter: brightness(1.1);
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: #111;
+      font-weight: 700;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .coords {
+      font-size: 0.9rem;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    #filterList label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+
+    #filterList input[type="checkbox"] {
+      width: auto;
+      margin: 0;
+    }
+
+    #locationList {
+      display: grid;
+      gap: 8px;
+    }
+
+    .location-item {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      cursor: pointer;
+    }
+
+    .location-item:hover {
+      border-color: var(--accent);
+    }
+
+    .location-name {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .location-meta {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+      background: #0b1020;
+    }
+
+    .map-error {
+      height: 100%;
+      display: grid;
+      place-items: center;
+      padding: 30px;
+      text-align: center;
+      color: #fca5a5;
+    }
+
+    .pin {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 2px solid white;
+      background: var(--pin-color, #999);
+      box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.25);
+    }
+
+    .popup-title {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .popup-category {
+      color: #555;
+      font-size: 0.9rem;
+      margin-bottom: 8px;
+    }
+
+    .popup-desc {
+      margin-bottom: 10px;
+      white-space: pre-wrap;
+    }
+
+    .popup-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .popup-btn {
+      display: inline-block;
+      width: auto;
+      background: #1f2937;
+      color: white !important;
+      text-decoration: none;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin: 0;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+
+    .popup-btn.delete {
+      background: #b91c1c;
+    }
+
+    @media (max-width: 900px) {
+      #app {
+        grid-template-columns: 1fr;
+        grid-template-rows: 420px 1fr;
+      }
+
+      .sidebar {
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="app">
+
+    <aside class="sidebar">
+
+      <h1>Alaion</h1>
+
+      <div class="muted">
+        Interactive map
+      </div>
+
+      <div class="section">
+
+        <label
+          class="block-label"
+          for="searchInput"
+        >
+          Search
+        </label>
+
+        <input
+          id="searchInput"
+          type="text"
+          placeholder="Search locations..."
+        >
+
+      </div>
+
+      <div class="section">
+
+        <label class="block-label">
+          Visible categories
+        </label>
+
+        <div id="filterList"></div>
+
+      </div>
+
+      <div class="section">
+
+        <button id="signInBtn">
+          Sign in as admin
+        </button>
+
+        <button
+          id="signOutBtn"
+          class="hidden"
+        >
+          Sign out
+        </button>
+
+        <button
+          id="toggleAdminBtn"
+          class="hidden"
+        >
+          Enter admin mode
+        </button>
+
+        <button
+          id="addMarkerBtn"
+          class="hidden"
+        >
+          Add marker
+        </button>
+
+        <div
+          id="authStatus"
+          class="muted"
+        >
+          Viewing as guest
+        </div>
+
+      </div>
+
+      <div
+        id="formSection"
+        class="section hidden"
+      >
+
+        <h2 id="formTitle">
+          Add marker
+        </h2>
+
+        <div
+          id="coordPreview"
+          class="coords"
+        >
+          No coordinates selected yet.
+        </div>
+
+        <form id="markerForm">
+
+          <input
+            type="hidden"
+            id="markerId"
+          >
+
+          <input
+            type="hidden"
+            id="markerX"
+          >
+
+          <input
+            type="hidden"
+            id="markerY"
+          >
+
+          <label
+            class="block-label"
+            for="markerName"
+          >
+            Name
+          </label>
+
+          <input
+            id="markerName"
+            type="text"
+            required
+          >
+
+          <label
+            class="block-label"
+            for="markerCategory"
+          >
+            Category
+          </label>
+
+          <select id="markerCategory"></select>
+
+          <label
+            class="block-label"
+            for="markerDescription"
+          >
+            Description
+          </label>
+
+          <textarea
+            id="markerDescription"
+            placeholder="Short description..."
+          ></textarea>
+
+          <label
+            class="block-label"
+            for="markerUrl"
+          >
+            Notion / wiki URL
+          </label>
+
+          <input
+            id="markerUrl"
+            type="url"
+            placeholder="https://..."
+          >
+
+          <button
+            type="submit"
+            class="primary"
+          >
+            Save marker
+          </button>
+
+          <button
+            type="button"
+            id="cancelFormBtn"
+          >
+            Cancel
+          </button>
+
+        </form>
+
+      </div>
+
+      <div class="section">
+
+        <label class="block-label">
+          Locations
+        </label>
+
+        <div id="locationList"></div>
+
+      </div>
+
+    </aside>
+
+    <div id="map"></div>
+
+  </div>
+
+  <script>
+
+    const SUPABASE_URL =
+      'https://hozwaajjnyaqojgrwwwe.supabase.co';
+
+    const SUPABASE_ANON_KEY =
+      'sb_publishable_KY1D8WaJ9n1H5oLbZj2cuw_dAM0eGKE';
+
+    const MAP_IMAGE_URL =
+      './Alaion-Map.png';
+
+    const MAP_IMAGE_WIDTH =
+      9200;
+
+    const MAP_IMAGE_HEIGHT =
+      5176;
+
+    const SITE_URL =
+      'https://aldrnarii.github.io/Alaion-Map/';
+
+
+    const CATEGORY_OPTIONS = [
+      'Capital',
+      'City',
+      'Town',
+      'Fortress',
+      'Ruin',
+      'Landmark',
+      'Dungeon',
+      'Region',
+      'Port',
+      'Other'
+    ];
+
+
+    const CATEGORY_COLORS = {
+      Capital: '#d4af37',
+      City: '#2b78e4',
+      Town: '#6aa84f',
+      Fortress: '#8e7cc3',
+      Ruin: '#cc4125',
+      Landmark: '#3d85c6',
+      Dungeon: '#674ea7',
+      Region: '#f1c232',
+      Port: '#0b5394',
+      Other: '#808080'
+    };
+
+
+    const searchInput =
+      document.getElementById('searchInput');
+
+    const filterList =
+      document.getElementById('filterList');
+
+    const locationList =
+      document.getElementById('locationList');
+
+    const signInBtn =
+      document.getElementById('signInBtn');
+
+    const signOutBtn =
+      document.getElementById('signOutBtn');
+
+    const toggleAdminBtn =
+      document.getElementById('toggleAdminBtn');
+
+    const addMarkerBtn =
+      document.getElementById('addMarkerBtn');
+
+    const authStatus =
+      document.getElementById('authStatus');
+
+    const formSection =
+      document.getElementById('formSection');
+
+    const formTitle =
+      document.getElementById('formTitle');
+
+    const coordPreview =
+      document.getElementById('coordPreview');
+
+    const markerForm =
+      document.getElementById('markerForm');
+
+    const markerId =
+      document.getElementById('markerId');
+
+    const markerX =
+      document.getElementById('markerX');
+
+    const markerY =
+      document.getElementById('markerY');
+
+    const markerName =
+      document.getElementById('markerName');
+
+    const markerCategory =
+      document.getElementById('markerCategory');
+
+    const markerDescription =
+      document.getElementById('markerDescription');
+
+    const markerUrl =
+      document.getElementById('markerUrl');
+
+    const cancelFormBtn =
+      document.getElementById('cancelFormBtn');
+
+    const mapElement =
+      document.getElementById('map');
+
+
+    const db =
+      supabase.createClient(
+        SUPABASE_URL,
+        SUPABASE_ANON_KEY
+      );
+
+
+    let map = null;
+
+    let currentSession = null;
+
+    let isAdmin = false;
+
+    let adminMode = false;
+
+    let pendingAdd = false;
+
+    let markersData = [];
+
+    let leafletMarkers = [];
+
+    let visibleCategories =
+      new Set(CATEGORY_OPTIONS);
+
+    let searchText = '';
+
+
+    function escapeHtml(value = '') {
+
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+
+    }
+
+
+    function safeHttpUrl(value) {
+
+      const trimmed =
+        String(value || '').trim();
+
+      if (!trimmed) {
+        return null;
+      }
+
+      try {
+
+        const parsed =
+          new URL(trimmed);
+
+        if (
+          parsed.protocol !== 'http:' &&
+          parsed.protocol !== 'https:'
+        ) {
+          return null;
+        }
+
+        return parsed.href;
+
+      } catch {
+
+        return null;
+
+      }
+
+    }
+
+
+    function populateCategorySelect() {
+
+      markerCategory.innerHTML = '';
+
+      for (const category of CATEGORY_OPTIONS) {
+
+        const option =
+          document.createElement('option');
+
+        option.value =
+          category;
+
+        option.textContent =
+          category;
+
+        markerCategory.appendChild(
+          option
+        );
+
+      }
+
+    }
+
+
+    function buildIcon(category) {
+
+      const color =
+        CATEGORY_COLORS[category] ||
+        CATEGORY_COLORS.Other;
+
+      return L.divIcon({
+
+        className: '',
+
+        html:
+          `<div class="pin" style="--pin-color:${color}"></div>`,
+
+        iconSize:
+          [18, 18],
+
+        iconAnchor:
+          [9, 9],
+
+        popupAnchor:
+          [0, -10]
+
+      });
+
+    }
+
+
+    function markerPassesFilters(marker) {
+
+      if (
+        !visibleCategories.has(
+          marker.category
+        )
+      ) {
+        return false;
+      }
+
+      if (!searchText) {
+        return true;
+      }
+
+      const haystack = [
+        marker.name || '',
+        marker.category || '',
+        marker.description || ''
+      ]
+        .join(' ')
+        .toLowerCase();
+
+      return haystack.includes(
+        searchText.toLowerCase()
+      );
+
+    }
+
+
+    function popupHtml(marker) {
+
+      const safeName =
+        escapeHtml(
+          marker.name || ''
+        );
+
+      const safeCategory =
+        escapeHtml(
+          marker.category || ''
+        );
+
+      const safeDescription =
+        escapeHtml(
+          marker.description || ''
+        );
+
+      const checkedUrl =
+        safeHttpUrl(
+          marker.notion_url
+        );
+
+      const safeUrl =
+        checkedUrl
+          ? escapeHtml(checkedUrl)
+          : '';
+
+      const wikiButton =
+        safeUrl
+          ? `<a class="popup-btn" href="${safeUrl}" target="_blank" rel="noopener noreferrer">Open page</a>`
+          : '';
+
+      const editButton =
+        isAdmin && adminMode
+          ? `<button class="popup-btn" type="button" onclick="window.editMarkerFromPopup('${marker.id}')">Edit</button>`
+          : '';
+
+      const deleteButton =
+        isAdmin && adminMode
+          ? `<button class="popup-btn delete" type="button" onclick="window.deleteMarkerFromPopup('${marker.id}')">Delete</button>`
+          : '';
+
+      return `
+        <div class="popup-title">
+          ${safeName}
+        </div>
+
+        <div class="popup-category">
+          ${safeCategory}
+        </div>
+
+        ${
+          safeDescription
+            ? `<div class="popup-desc">${safeDescription}</div>`
+            : ''
+        }
+
+        <div class="popup-actions">
+          ${wikiButton}
+          ${editButton}
+          ${deleteButton}
+        </div>
+      `;
+
+    }
+
+
+    function clearLeafletMarkers() {
+
+      if (!map) {
+        return;
+      }
+
+      for (const marker of leafletMarkers) {
+
+        map.removeLayer(
+          marker
+        );
+
+      }
+
+      leafletMarkers = [];
+
+    }
+
+
+    function renderFilterList() {
+
+      const categories =
+        new Set(
+          CATEGORY_OPTIONS
+        );
+
+      for (const marker of markersData) {
+
+        categories.add(
+          marker.category || 'Other'
+        );
+
+      }
+
+      filterList.innerHTML = '';
+
+      for (const category of categories) {
+
+        const label =
+          document.createElement(
+            'label'
+          );
+
+        const checkbox =
+          document.createElement(
+            'input'
+          );
+
+        const text =
+          document.createElement(
+            'span'
+          );
+
+        checkbox.type =
+          'checkbox';
+
+        checkbox.checked =
+          visibleCategories.has(
+            category
+          );
+
+        text.textContent =
+          category;
+
+        checkbox.addEventListener(
+          'change',
+          () => {
+
+            if (checkbox.checked) {
+
+              visibleCategories.add(
+                category
+              );
+
+            } else {
+
+              visibleCategories.delete(
+                category
+              );
+
+            }
+
+            renderLocationList();
+
+            renderMarkersOnMap();
+
+          }
+        );
+
+        label.appendChild(
+          checkbox
+        );
+
+        label.appendChild(
+          text
+        );
+
+        filterList.appendChild(
+          label
+        );
+
+      }
+
+    }
+
+
+    function renderLocationList() {
+
+      locationList.innerHTML = '';
+
+      const filtered =
+        markersData.filter(
+          markerPassesFilters
+        );
+
+      if (filtered.length === 0) {
+
+        locationList.innerHTML =
+          '<div class="muted">No matching locations.</div>';
+
+        return;
+
+      }
+
+      for (const marker of filtered) {
+
+        const item =
+          document.createElement(
+            'div'
+          );
+
+        item.className =
+          'location-item';
+
+        const name =
+          document.createElement(
+            'div'
+          );
+
+        name.className =
+          'location-name';
+
+        name.textContent =
+          marker.name ||
+          'Unnamed location';
+
+        const meta =
+          document.createElement(
+            'div'
+          );
+
+        meta.className =
+          'location-meta';
+
+        meta.textContent =
+          marker.category ||
+          'Other';
+
+        item.appendChild(
+          name
+        );
+
+        item.appendChild(
+          meta
+        );
+
+        item.addEventListener(
+          'click',
+          () => {
+
+            if (!map) {
+              return;
+            }
+
+            map.setView(
+              [
+                Number(marker.y),
+                Number(marker.x)
+              ],
+              Math.max(
+                map.getZoom(),
+                0
+              )
+            );
+
+          }
+        );
+
+        locationList.appendChild(
+          item
+        );
+
+      }
+
+    }
+
+
+    function renderMarkersOnMap() {
+
+      if (!map) {
+        return;
+      }
+
+      clearLeafletMarkers();
+
+      const filtered =
+        markersData.filter(
+          markerPassesFilters
+        );
+
+      for (const marker of filtered) {
+
+        const leafletMarker =
+          L.marker(
+            [
+              Number(marker.y),
+              Number(marker.x)
+            ],
+            {
+              icon:
+                buildIcon(
+                  marker.category
+                ),
+              draggable:
+                isAdmin &&
+                adminMode
+            }
+          ).addTo(map);
+
+        leafletMarker.bindPopup(
+          popupHtml(marker)
+        );
+
+        if (
+          isAdmin &&
+          adminMode
+        ) {
+
+          leafletMarker.on(
+            'dragend',
+            async event => {
+
+              const latlng =
+                event.target
+                  .getLatLng();
+
+              const {
+                error
+              } =
+                await db
+                  .from('markers')
+                  .update({
+                    x:
+                      latlng.lng,
+                    y:
+                      latlng.lat
+                  })
+                  .eq(
+                    'id',
+                    marker.id
+                  );
+
+              if (error) {
+
+                alert(
+                  'Failed to update marker position: ' +
+                  error.message
+                );
+
+                await loadMarkers();
+
+                return;
+
+              }
+
+              await loadMarkers();
+
+            }
+          );
+
+        }
+
+        leafletMarkers.push(
+          leafletMarker
+        );
+
+      }
+
+    }
+
+
+    function renderAll() {
+
+      renderFilterList();
+
+      renderLocationList();
+
+      renderMarkersOnMap();
+
+    }
+
+
+    async function loadMarkers() {
+
+      const {
+        data,
+        error
+      } =
+        await db
+          .from('markers')
+          .select('*')
+          .order(
+            'name',
+            {
+              ascending:
+                true
+            }
+          );
+
+      if (error) {
+
+        console.error(
+          error
+        );
+
+        alert(
+          'Failed to load markers: ' +
+          error.message
+        );
+
+        return;
+
+      }
+
+      markersData =
+        data || [];
+
+      renderAll();
+
+    }
+
+
+    async function refreshAuthState() {
+
+      const {
+        data,
+        error
+      } =
+        await db.auth
+          .getSession();
+
+      if (error) {
+
+        console.error(
+          error
+        );
+
+      }
+
+      currentSession =
+        data.session;
+
+      isAdmin =
+        false;
+
+      if (
+        currentSession &&
+        currentSession.user &&
+        currentSession.user.id
+      ) {
+
+        const {
+          data: adminRow,
+          error: adminError
+        } =
+          await db
+            .from('admins')
+            .select('user_id')
+            .eq(
+              'user_id',
+              currentSession.user.id
+            )
+            .maybeSingle();
+
+        if (adminError) {
+
+          console.error(
+            adminError
+          );
+
+        }
+
+        isAdmin =
+          Boolean(
+            adminRow
+          );
+
+      }
+
+      if (!isAdmin) {
+
+        adminMode =
+          false;
+
+        pendingAdd =
+          false;
+
+      }
+
+      updateAuthUi();
+
+      renderAll();
+
+    }
+
+
+    function updateAuthUi() {
+
+      if (!currentSession) {
+
+        authStatus.textContent =
+          'Viewing as guest';
+
+        signInBtn.classList.remove(
+          'hidden'
+        );
+
+        signOutBtn.classList.add(
+          'hidden'
+        );
+
+        toggleAdminBtn.classList.add(
+          'hidden'
+        );
+
+        addMarkerBtn.classList.add(
+          'hidden'
+        );
+
+        formSection.classList.add(
+          'hidden'
+        );
+
+        return;
+
+      }
+
+      const email =
+        currentSession.user.email ||
+        'Signed in';
+
+      if (isAdmin) {
+
+        authStatus.textContent =
+          `Signed in as admin: ${email}`;
+
+      } else {
+
+        authStatus.textContent =
+          `Signed in, but not an admin: ${email}`;
+
+      }
+
+      signInBtn.classList.add(
+        'hidden'
+      );
+
+      signOutBtn.classList.remove(
+        'hidden'
+      );
+
+      if (isAdmin) {
+
+        toggleAdminBtn.classList.remove(
+          'hidden'
+        );
+
+        toggleAdminBtn.textContent =
+          adminMode
+            ? 'Exit admin mode'
+            : 'Enter admin mode';
+
+        addMarkerBtn.classList.toggle(
+          'hidden',
+          !adminMode
+        );
+
+      } else {
+
+        toggleAdminBtn.classList.add(
+          'hidden'
+        );
+
+        addMarkerBtn.classList.add(
+          'hidden'
+        );
+
+        formSection.classList.add(
+          'hidden'
+        );
+
+      }
+
+    }
+
+
+    function openFormForNewMarker(
+      x,
+      y
+    ) {
+
+      formSection.classList.remove(
+        'hidden'
+      );
+
+      formTitle.textContent =
+        'Add marker';
+
+      markerId.value =
+        '';
+
+      markerX.value =
+        x;
+
+      markerY.value =
+        y;
+
+      markerName.value =
+        '';
+
+      markerCategory.value =
+        'City';
+
+      markerDescription.value =
+        '';
+
+      markerUrl.value =
+        '';
+
+      coordPreview.textContent =
+        `Selected coordinates — X: ${x.toFixed(2)}, Y: ${y.toFixed(2)}`;
+
+      markerName.focus();
+
+    }
+
+
+    function openFormForExistingMarker(
+      marker
+    ) {
+
+      formSection.classList.remove(
+        'hidden'
+      );
+
+      formTitle.textContent =
+        'Edit marker';
+
+      markerId.value =
+        marker.id;
+
+      markerX.value =
+        marker.x;
+
+      markerY.value =
+        marker.y;
+
+      markerName.value =
+        marker.name || '';
+
+      markerCategory.value =
+        CATEGORY_OPTIONS.includes(
+          marker.category
+        )
+          ? marker.category
+          : 'Other';
+
+      markerDescription.value =
+        marker.description || '';
+
+      markerUrl.value =
+        marker.notion_url || '';
+
+      coordPreview.textContent =
+        `Coordinates — X: ${Number(marker.x).toFixed(2)}, Y: ${Number(marker.y).toFixed(2)}`;
+
+    }
+
+
+    function closeForm() {
+
+      formSection.classList.add(
+        'hidden'
+      );
+
+      markerForm.reset();
+
+      markerId.value =
+        '';
+
+      markerX.value =
+        '';
+
+      markerY.value =
+        '';
+
+      coordPreview.textContent =
+        'No coordinates selected yet.';
+
+      pendingAdd =
+        false;
+
+    }
+
+
+    window.editMarkerFromPopup =
+      function(id) {
+
+        const marker =
+          markersData.find(
+            item =>
+              item.id === id
+          );
+
+        if (!marker) {
+          return;
+        }
+
+        openFormForExistingMarker(
+          marker
+        );
+
+      };
+
+
+    window.deleteMarkerFromPopup =
+      async function(id) {
+
+        const marker =
+          markersData.find(
+            item =>
+              item.id === id
+          );
+
+        if (!marker) {
+          return;
+        }
+
+        const confirmed =
+          confirm(
+            `Delete marker "${marker.name}"?`
+          );
+
+        if (!confirmed) {
+          return;
+        }
+
+        const {
+          error
+        } =
+          await db
+            .from('markers')
+            .delete()
+            .eq(
+              'id',
+              id
+            );
+
+        if (error) {
+
+          alert(
+            'Failed to delete marker: ' +
+            error.message
+          );
+
+          return;
+
+        }
+
+        await loadMarkers();
+
+      };
+
+
+    searchInput.addEventListener(
+      'input',
+      () => {
+
+        searchText =
+          searchInput.value
+            .trim();
+
+        renderLocationList();
+
+        renderMarkersOnMap();
+
+      }
+    );
+
+
+    signInBtn.addEventListener(
+      'click',
+      async () => {
+
+        const email =
+          prompt(
+            'Enter your admin email address:'
+          );
+
+        if (!email) {
+          return;
+        }
+
+        const {
+          error
+        } =
+          await db.auth
+            .signInWithOtp({
+              email,
+              options: {
+                emailRedirectTo:
+                  SITE_URL
+              }
+            });
+
+        if (error) {
+
+          alert(
+            'Sign-in failed: ' +
+            error.message
+          );
+
+          return;
+
+        }
+
+        alert(
+          'Magic link sent. Open the email and click the sign-in link.'
+        );
+
+      }
+    );
+
+
+    signOutBtn.addEventListener(
+      'click',
+      async () => {
+
+        await db.auth
+          .signOut();
+
+        await refreshAuthState();
+
+      }
+    );
+
+
+    toggleAdminBtn.addEventListener(
+      'click',
+      () => {
+
+        adminMode =
+          !adminMode;
+
+        pendingAdd =
+          false;
+
+        closeForm();
+
+        updateAuthUi();
+
+        renderMarkersOnMap();
+
+      }
+    );
+
+
+    addMarkerBtn.addEventListener(
+      'click',
+      () => {
+
+        pendingAdd =
+          true;
+
+        formSection.classList.add(
+          'hidden'
+        );
+
+        alert(
+          'Now click on the map where you want the new marker.'
+        );
+
+      }
+    );
+
+
+    cancelFormBtn.addEventListener(
+      'click',
+      () => {
+
+        closeForm();
+
+      }
+    );
+
+
+    markerForm.addEventListener(
+      'submit',
+      async event => {
+
+        event.preventDefault();
+
+        const rawUrl =
+          markerUrl.value
+            .trim();
+
+        const checkedUrl =
+          rawUrl
+            ? safeHttpUrl(rawUrl)
+            : null;
+
+        if (
+          rawUrl &&
+          !checkedUrl
+        ) {
+
+          alert(
+            'The wiki link must start with http:// or https://'
+          );
+
+          return;
+
+        }
+
+        const payload = {
+
+          name:
+            markerName.value
+              .trim(),
+
+          category:
+            markerCategory.value,
+
+          x:
+            Number(
+              markerX.value
+            ),
+
+          y:
+            Number(
+              markerY.value
+            ),
+
+          description:
+            markerDescription.value
+              .trim() ||
+            null,
+
+          notion_url:
+            checkedUrl
+
+        };
+
+        if (!payload.name) {
+
+          alert(
+            'Name is required.'
+          );
+
+          return;
+
+        }
+
+        if (
+          Number.isNaN(
+            payload.x
+          ) ||
+          Number.isNaN(
+            payload.y
+          )
+        ) {
+
+          alert(
+            'No coordinates selected. Click Add marker and then click the map.'
+          );
+
+          return;
+
+        }
+
+        let error =
+          null;
+
+        if (
+          markerId.value
+        ) {
+
+          const result =
+            await db
+              .from('markers')
+              .update(
+                payload
+              )
+              .eq(
+                'id',
+                markerId.value
+              );
+
+          error =
+            result.error;
+
+        } else {
+
+          const result =
+            await db
+              .from('markers')
+              .insert([
+                payload
+              ]);
+
+          error =
+            result.error;
+
+        }
+
+        if (error) {
+
+          alert(
+            'Failed to save marker: ' +
+            error.message
+          );
+
+          return;
+
+        }
+
+        closeForm();
+
+        await loadMarkers();
+
+      }
+    );
+
+
+    function initialiseMap() {
+
+      const bounds = [
+        [0, 0],
+        [
+          MAP_IMAGE_HEIGHT,
+          MAP_IMAGE_WIDTH
+        ]
+      ];
+
+      map =
+        L.map(
+          'map',
+          {
+            crs:
+              L.CRS.Simple,
+            minZoom:
+              -5,
+            maxZoom:
+              4,
+            zoomSnap:
+              0.25,
+            maxBoundsViscosity:
+              1
+          }
+        );
+
+      L.imageOverlay(
+        MAP_IMAGE_URL,
+        bounds,
+        {
+          alt:
+            'Map of Alaion'
+        }
+      ).addTo(
+        map
+      );
+
+      map.fitBounds(
+        bounds
+      );
+
+      map.setMaxBounds(
+        bounds
+      );
+
+      map.on(
+        'click',
+        event => {
+
+          if (
+            !(
+              isAdmin &&
+              adminMode &&
+              pendingAdd
+            )
+          ) {
+            return;
+          }
+
+          pendingAdd =
+            false;
+
+          openFormForNewMarker(
+            event.latlng.lng,
+            event.latlng.lat
+          );
+
+        }
+      );
+
+    }
+
+
+    function checkMapImageAndStart() {
+
+      const imageProbe =
+        new Image();
+
+      imageProbe.onload =
+        async () => {
+
+          initialiseMap();
+
+          populateCategorySelect();
+
+          await refreshAuthState();
+
+          await loadMarkers();
+
+        };
+
+      imageProbe.onerror =
+        () => {
+
+          mapElement.innerHTML =
+            `
+              <div class="map-error">
+                <div>
+                  <strong>
+                    The map image could not be loaded.
+                  </strong>
+
+                  <br><br>
+
+                  Expected file:
+
+                  <code>
+                    Alaion-Map.png
+                  </code>
+
+                  <br><br>
+
+                  Make sure it is uploaded to the same GitHub repository folder as
+                  <code>
+                    index.html
+                  </code>.
+                </div>
+              </div>
+            `;
+
+        };
+
+      imageProbe.src =
+        MAP_IMAGE_URL;
+
+    }
+
+
+    db.auth.onAuthStateChange(
+      () => {
+
+        window.setTimeout(
+          () => {
+            refreshAuthState();
+          },
+          0
+        );
+
+      }
+    );
+
+
+    checkMapImageAndStart();
+
+  </script>
+
+</body>
+
+</html>
